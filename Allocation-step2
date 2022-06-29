@@ -1,0 +1,663 @@
+-- Function: public.fn_sapph_phanbo_kv()
+
+-- DROP FUNCTION public.fn_sapph_phanbo_kv();
+
+CREATE OR REPLACE FUNCTION public.fn_sapph_phanbo_kv()
+  RETURNS void AS
+$BODY$
+	DECLARE
+   v_phan numeric := 0 ; 
+   v_slconlai numeric := 0 ;
+   v_limit numeric := 0; 
+   v_count numeric := 0;
+   v_checkExit INTEGER := 0 ;
+   
+    
+   v_tong_cl numeric := 0; 
+   v_min numeric := 0;
+   v_max numeric := 0; 
+   
+   v_sum_phan numeric := 0; 
+   
+   r record;
+   ri record ; 
+   ris record ;
+   
+    BEGIN
+	
+	/*
+	*	Author: vinh.nk
+	*	Company: PNJ
+	*   Date: 10/05/2021
+	*	Description: fn_sapph_phanbo_kv 
+	*	xuat data COPY sapph_thuathieu_kv TO 'G:/Test/template/sapph_thuathieu_kv.csv' DELIMITER ',' CSV HEADER;
+	*   select public.fn_sapph_phanbo_kv();
+	*
+	*  
+	*/
+	
+	---------------*****************  phan uu tien phan hoi  ********************************-------------------------------
+	
+	--- xet them trường hợp số lượng cung ứng còn lại < đáp ứng 
+	--- thêm cột đáp ứng cửa hàng thực tế 
+	
+	
+	
+	
+	FOR r IN select * from public.sapph_cuahang_phanhoi order by uutien -- where uutien != 0
+		LOOP 
+			FOR ri IN select * from public.sapph_thuathieu_kv where master = r.master and dc = r.dc 
+			LOOP 
+				-- thuc hien phan uu tien 
+				-- kiem tra xem con ton cung ung hay khong 
+				v_phan = r.dapung_ch ;
+				
+				select slconlai into v_slconlai from public.sapph_cungung_pb where master = ri.master and slconlai > 0 ;
+				
+				if ( v_slconlai > 0 ) then -- phan 
+					if v_phan > v_slconlai then 
+						v_phan = v_slconlai ;
+					end if ;
+							
+					if v_phan > 0 then 
+						update sapph_cungung_pb 
+							set slconlai = slconlai - v_phan
+							where master = ri.master ;
+							
+						update sapph_thuathieu_kv
+							set  phan_phanhoi = COALESCE(phan_phanhoi,0) + v_phan, phanbo_all = COALESCE(phanbo_all,0) + v_phan, thieu_min = COALESCE(thieu_min,0) - v_phan, thieu_max = COALESCE(thieu_max,0) - v_phan, thieu_min_ch = COALESCE(thieu_min_ch,0) - v_phan, thieu_max_ch = COALESCE(thieu_max_ch,0) - v_phan
+							where dc = ri.dc and master = ri.master ;
+							
+						update public.sapph_cuahang_phanhoi 
+							set phan = COALESCE(phan,0) + v_phan
+							where madonvi = r.madonvi and master = r.master and material = r.material ;
+						
+					end if ;
+				end if ; -- v_slconlai > 0 , co ton de phan hang hoa 
+				
+			END LOOP; -- ri loop
+		
+		END LOOP; -- r loop 
+	
+	
+	-- *********************************************** trường hợp không nhận hàng dc <> % *****************************************************************
+	
+	-- danh dau nhung san pham cua hang khong nhan vao bang sapph_cuahang_phanhoi_khongnhan
+	-- status = 0 là không nhận 
+	FOR r IN select * from public.sapph_cuahang_phanhoi_khongnhan_upload 
+		LOOP 
+			FOR ris IN select * from public.sapph_thuathieu_ch_upload where dc = r.dc and  madonvi like r.madonvi and master like r.master and nhomhang like r.nhomhang and chungloai like r.chungloai 
+				LOOP 
+					update sapph_cuahang_phanhoi_khongnhan 
+						set status = 0 
+						where madonvi = ris.madonvi and master = ris.master ;
+					
+				END LOOP; -- ris loop
+	
+		END LOOP; -- r loop 
+	
+	-- status = 0 là không nhận 
+	FOR r IN select dc, master, sum(thieu_min) as t_min, sum(thieu_max) as t_max from public.sapph_cuahang_phanhoi_khongnhan where status = 0  group by dc, master 
+		LOOP 
+			v_phan = 0 ;
+			update sapph_thuathieu_kv
+				set  phan_phanhoi = COALESCE(phan_phanhoi,0) + v_phan, phanbo_all = COALESCE(phanbo_all,0) + v_phan, thieu_min_ch = COALESCE(thieu_min_ch,0) - r.t_min, thieu_max_ch = COALESCE(thieu_max_ch,0) - r.t_max
+				where dc = r.dc and master = r.master ;
+	
+		END LOOP; -- r loop 
+		
+		
+		/*
+		thieu_min_kv > thieu_min_ch(nhận) --> thieu_min_kv = thieu_min_ch 
+		thieu_min_kv <= thieu_min_ch(nhận) --> thieu_min_kv không đổi
+
+		thieu_max_kv > thieu_max_ch(nhận) --> thieu_max_kv = thieu_max_ch 
+		thieu_max_kv <= thieu_max_ch(nhận) --> thieu_max_kv không đổi
+		
+		*/
+		update sapph_thuathieu_kv
+			set thieu_min = thieu_min_ch
+			where thieu_min > thieu_min_ch ;
+			
+		update sapph_thuathieu_kv
+			set thieu_max = thieu_max_ch
+			where thieu_max > thieu_max_ch ;
+
+
+	---------------*****************  phan_min ********************************-------------------------------
+	-- lấy cung ứng x tỷ lệ thiếu min : số nhận tối đa = thiêu_min 
+	-- đảm bảo số nhận không > con lại cung ứng 
+	
+	-- cap nhat gia tri tinh toan cua chenh lech 
+	-- tinh chenh lech 	
+	delete from public.sapph_thuathieu_kv_tong ;
+	
+	insert into public.sapph_thuathieu_kv_tong 
+	SELECT kv.dc,
+    kv.master,
+    sum(kv.thieu_min) OVER (PARTITION BY kv.master) AS tong --tong_min,
+   FROM sapph_thuathieu_kv kv
+   WHERE kv.thieu_min > 0;
+	
+	
+	FOR r IN select * from public.sapph_thuathieu_kv --where phan_phanhoi is null or phan_phanhoi > 0 
+	LOOP
+
+		select tong into v_tong_cl from sapph_thuathieu_kv_tong where dc = r.dc and master = r.master ;
+		update sapph_thuathieu_kv 
+			set tong_min = v_tong_cl  
+		where dc = r.dc and master = r.master ;
+
+	END LOOP ;
+	
+	update sapph_thuathieu_kv 
+		set tyle_min = (case when tong_min > 0 then 1.0*thieu_min/tong_min else 0 end );
+		
+	----------------------------
+	
+
+	FOR r IN select master, slpb, slconlai from public.sapph_cungung_pb where slconlai > 0
+	LOOP 
+		FOR ri IN select * from public.sapph_thuathieu_kv where master = r.master  and thieu_min > 0 --and (phan_phanhoi is null or phan_phanhoi > 0)
+		LOOP		
+			v_phan = round(r.slconlai*ri.tyle_min, 0) ;
+			
+			
+			-- kiem tra voi thieu min 
+			if(v_phan > ri.thieu_min) then 
+				v_phan = ri.thieu_min; 
+			end if ;
+			
+			-- kiem tra sl con lai 
+			select slconlai into v_slconlai from public.sapph_cungung_pb where master = ri.master ; 
+			
+			if(v_phan > v_slconlai ) then 
+				v_phan = v_slconlai; 
+			end if ;
+			
+			-- cap nhat phan_min 
+			if (v_phan > 0 ) then 
+				update sapph_cungung_pb 
+					set slconlai = slconlai - v_phan
+					where master = ri.master ;
+					
+				update sapph_thuathieu_kv
+					set  phan_min = COALESCE(phan_min,0) + v_phan, phanbo_all = COALESCE(phanbo_all,0) + v_phan
+					where dc = ri.dc and master = ri.master ;
+			end if ;
+			
+		END LOOP; -- sapph_thuathieu_kv inner 
+	END LOOP; -- sapph_cungung_pb outer 
+	
+	-- phan_min_bs -------------------------------------------------
+	FOR r IN select master, slpb, slconlai from public.sapph_cungung_pb where slconlai > 0
+	LOOP
+		--select sum(phan_min) into v_sum_phan from public.sapph_thuathieu_kv where master = r.master ;
+		--if (v_sum_phan = 0 ) then 
+			FOR ri IN select * from public.sapph_thuathieu_kv where master = r.master  and thieu_min > 0 and phan_min < thieu_min --and (phan_phanhoi is null or phan_phanhoi > 0) 
+			order by tyle_min desc 
+				LOOP		
+					v_phan = 1 ;
+					
+					-- kiem tra voi thieu min 
+					if(v_phan > ri.thieu_min) then 
+						v_phan = ri.thieu_min; 
+					end if ;
+					
+					-- kiem tra sl con lai 
+					select slconlai into v_slconlai from public.sapph_cungung_pb where master = ri.master ; 
+					
+					if(v_phan > v_slconlai ) then 
+						v_phan = v_slconlai; 
+					end if ;
+					
+					-- cap nhat phan_min 
+					if (v_phan > 0 ) then 
+						update sapph_cungung_pb 
+							set slconlai = slconlai - v_phan
+							where master = ri.master ;
+							
+						update sapph_thuathieu_kv
+							set  phan_min_bs = COALESCE(phan_min_bs,0) + v_phan, phanbo_all = COALESCE(phanbo_all,0) + v_phan
+							where dc = ri.dc and master = ri.master ;
+					end if ;
+				END LOOP ;
+				
+		--end if ; -- end v_sum_phan = 0 
+	
+	END LOOP ; -- end phan_min_bs 
+			
+	
+	
+	---------------*****************  phan_cl_max ********************************-------------------------------
+	
+	-- cap nhat gia tri tinh toan cua chenh lech 
+	-- tinh chenh lech 
+	update sapph_thuathieu_kv 
+			set cl_max = COALESCE(thieu_max, 0::numeric) - COALESCE(phan_min, 0::numeric) - COALESCE(phan_min_bs, 0::numeric) ;
+			
+	update sapph_thuathieu_kv 
+		set cl_max = 0 
+	where cl_max < 0 ;
+		
+	-- cap nhat gia tri tinh toan cua chenh lech 
+	-- tinh chenh lech 	
+	delete from public.sapph_thuathieu_kv_tong ;
+	
+	insert into public.sapph_thuathieu_kv_tong 
+	SELECT kv.dc,
+    kv.master,
+    sum(kv.cl_max) OVER (PARTITION BY kv.master) AS tong -- tong_cl_max,
+   FROM sapph_thuathieu_kv kv 
+   WHERE kv.cl_max > 0;
+   
+	
+	FOR r IN select * from public.sapph_thuathieu_kv 
+	LOOP
+
+		select tong into v_tong_cl from sapph_thuathieu_kv_tong where dc = r.dc and master = r.master ;
+		update sapph_thuathieu_kv 
+			set tong_cl_max = v_tong_cl  
+		where dc = r.dc and master = r.master ;
+
+	END LOOP ;
+	
+	update sapph_thuathieu_kv 
+		set tyle_cl_max = (case when tong_cl_max > 0 then 1.0*cl_max/tong_cl_max else 0 end );
+		
+	----------------------------
+
+	FOR r IN select master, slpb, slconlai from public.sapph_cungung_pb where slconlai > 0
+	LOOP 
+		FOR ri IN select * from public.sapph_thuathieu_kv where master = r.master and cl_max > 0 --and (phan_phanhoi is null or phan_phanhoi > 0)
+		LOOP
+			v_phan = round(r.slconlai*ri.tyle_cl_max, 0) ;
+			
+			-- kiem tra voi cl_max 
+			if(v_phan > ri.cl_max) then 
+				v_phan = ri.cl_max; 
+			end if ;
+			
+			-- kiem tra sl con lai 
+			select slconlai into v_slconlai from public.sapph_cungung_pb where master = ri.master ; 
+			
+			if(v_phan > v_slconlai ) then 
+				v_phan = v_slconlai; 
+			end if ;
+			
+			-- cap nhat phan_cl_max
+			if (v_phan > 0 ) then 
+				update sapph_cungung_pb 
+					set slconlai = slconlai - v_phan
+					where master = ri.master ;
+					
+				update sapph_thuathieu_kv
+					set  phan_cl_max = COALESCE(phan_cl_max,0) + v_phan, phanbo_all = COALESCE(phanbo_all,0) + v_phan
+					where dc = ri.dc and master = ri.master ;
+			end if ;
+			
+		END LOOP; -- sapph_thuathieu_kv inner 
+	END LOOP; -- sapph_cungung_pb outer
+	
+	
+	-- phan_cl_max_bs -------------------------------------------------
+	FOR r IN select master, slpb, slconlai from public.sapph_cungung_pb where slconlai > 0
+	LOOP
+		--select sum(phan_cl_max) into v_sum_phan from public.sapph_thuathieu_kv where master = r.master ;
+		--if (v_sum_phan = 0 ) then 
+			FOR ri IN select * from public.sapph_thuathieu_kv where master = r.master  and cl_max > 0 and phan_cl_max < cl_max --and (phan_phanhoi is null or phan_phanhoi > 0) 
+			order by tyle_cl_max desc 
+				LOOP		
+					v_phan = 1 ;
+					
+					-- kiem tra voi cl_max 
+					if(v_phan > ri.cl_max) then 
+						v_phan = ri.cl_max; 
+					end if ;
+					
+					-- kiem tra sl con lai 
+					select slconlai into v_slconlai from public.sapph_cungung_pb where master = ri.master ; 
+					
+					if(v_phan > v_slconlai ) then 
+						v_phan = v_slconlai; 
+					end if ;
+					
+					-- cap nhat phan_cl_max 
+					if (v_phan > 0 ) then 
+						update sapph_cungung_pb 
+							set slconlai = slconlai - v_phan
+							where master = ri.master ;
+							
+						update sapph_thuathieu_kv
+							set  phan_cl_max_bs = COALESCE(phan_cl_max_bs,0) + v_phan, phanbo_all = COALESCE(phanbo_all,0) + v_phan
+							where dc = ri.dc and master = ri.master ;
+					end if ;
+				END LOOP ;
+				
+		--end if ; -- end v_sum_phan = 0 
+	
+	END LOOP ; -- end phan_cl_max_bs 
+	
+	---------------*****************  phan_cl_min_ch ********************************-------------------------------
+	
+	-- cap nhat gia tri tinh toan cua chenh lech 
+	-- tinh chenh lech 
+	update sapph_thuathieu_kv 
+		set cl_min_ch =  COALESCE(thieu_min_ch,0) - COALESCE(phan_cl_max,0) - COALESCE(phan_cl_max_bs,0) - COALESCE(phan_min,0)  - COALESCE(phan_min_bs, 0::numeric) ;
+		
+	update sapph_thuathieu_kv 
+		set cl_min_ch = 0 
+	where cl_min_ch < 0 ;
+	
+	-- cap nhat gia tri tinh toan cua chenh lech 
+	-- tinh chenh lech 	
+	delete from public.sapph_thuathieu_kv_tong ;
+	
+	insert into public.sapph_thuathieu_kv_tong 
+	SELECT kv.dc,
+    kv.master,
+    sum(kv.cl_min_ch) OVER (PARTITION BY kv.master) AS tong --tong_cl_min_ch,
+   FROM sapph_thuathieu_kv kv 
+   WHERE kv.cl_min_ch > 0;
+	
+	FOR r IN select * from public.sapph_thuathieu_kv 
+	LOOP
+
+		select tong into v_tong_cl from sapph_thuathieu_kv_tong where dc = r.dc and master = r.master ;
+		update sapph_thuathieu_kv 
+			set tong_cl_min_ch = v_tong_cl  
+		where dc = r.dc and master = r.master ;
+
+	END LOOP ;
+	
+	update sapph_thuathieu_kv 
+		set tyle_cl_min_ch = (case when tong_cl_min_ch > 0 then 1.0*cl_min_ch/tong_cl_min_ch else 0 end );
+		
+	----------------------------
+
+	FOR r IN select master, slpb, slconlai from public.sapph_cungung_pb where slconlai > 0
+	LOOP 
+		FOR ri IN select * from public.sapph_thuathieu_kv where master = r.master and cl_min_ch > 0 --and (phan_phanhoi is null or phan_phanhoi > 0)
+		LOOP
+			v_phan = round(r.slconlai*ri.tyle_cl_min_ch, 0) ;
+			
+			-- kiem tra voi cl_min_ch 
+			if(v_phan > ri.cl_min_ch) then 
+				v_phan = ri.cl_min_ch; 
+			end if ;
+			
+			-- kiem tra sl con lai 
+			select slconlai into v_slconlai from public.sapph_cungung_pb where master = ri.master ; 
+			
+			if(v_phan > v_slconlai ) then 
+				v_phan = v_slconlai; 
+			end if ;
+			
+			-- cap nhat phan_cl_min_ch
+			if (v_phan > 0 ) then 
+				update sapph_cungung_pb 
+					set slconlai = slconlai - v_phan
+					where master = ri.master ;
+					
+				update sapph_thuathieu_kv
+					set  phan_cl_min_ch = COALESCE(phan_cl_min_ch,0) + v_phan, phanbo_all = COALESCE(phanbo_all,0) + v_phan
+					where dc = ri.dc and master = ri.master ;
+			end if ;
+			
+		END LOOP; -- sapph_thuathieu_kv inner 
+	END LOOP; -- sapph_cungung_pb outer
+	
+	-- phan_cl_min_ch_bs -------------------------------------------------
+	FOR r IN select master, slpb, slconlai from public.sapph_cungung_pb where slconlai > 0
+	LOOP
+		--select sum(phan_cl_min_ch) into v_sum_phan from public.sapph_thuathieu_kv where master = r.master ;
+		--if (v_sum_phan = 0 ) then 
+			FOR ri IN select * from public.sapph_thuathieu_kv where master = r.master  and cl_min_ch > 0 and phan_cl_min_ch < cl_min_ch --and (phan_phanhoi is null or phan_phanhoi > 0)
+			order by tyle_cl_min_ch desc 
+				LOOP		
+					v_phan = 1 ;
+					
+					-- kiem tra voi cl_min_ch 
+					if(v_phan > ri.cl_min_ch) then 
+						v_phan = ri.cl_min_ch; 
+					end if ;
+					
+					-- kiem tra sl con lai 
+					select slconlai into v_slconlai from public.sapph_cungung_pb where master = ri.master ; 
+					
+					if(v_phan > v_slconlai ) then 
+						v_phan = v_slconlai; 
+					end if ;
+					
+					-- cap nhat phan_cl_min_ch_bs 
+					if (v_phan > 0 ) then 
+						update sapph_cungung_pb 
+							set slconlai = slconlai - v_phan
+							where master = ri.master ;
+							
+						update sapph_thuathieu_kv
+							set  phan_cl_min_ch_bs = COALESCE(phan_cl_min_ch_bs,0) + v_phan, phanbo_all = COALESCE(phanbo_all,0) + v_phan
+							where dc = ri.dc and master = ri.master ;
+					end if ;
+				END LOOP ;
+				
+		--end if ; -- end v_sum_phan = 0 
+	
+	END LOOP ; -- end phan_cl_min_ch_bs 
+
+	---------------*****************  phan_cl_max_ch ********************************-------------------------------
+	
+	-- cap nhat gia tri tinh toan cua chenh lech 
+	-- tinh chenh lech 
+	update sapph_thuathieu_kv 
+		set cl_max_ch =  COALESCE(thieu_max_ch,0) - COALESCE(phan_cl_min_ch,0) - COALESCE(phan_cl_min_ch_bs,0) - COALESCE(phan_cl_max,0) - COALESCE(phan_cl_max_bs,0) - COALESCE(phan_min,0)  - COALESCE(phan_min_bs, 0::numeric) ;
+	
+	update sapph_thuathieu_kv 
+		set cl_max_ch = 0 
+	where cl_max_ch < 0 ;
+		
+	-- cap nhat gia tri tinh toan cua chenh lech 
+	-- tinh chenh lech 	
+	delete from public.sapph_thuathieu_kv_tong ;
+	
+	insert into public.sapph_thuathieu_kv_tong 
+	SELECT kv.dc,
+    kv.master,
+    sum(kv.cl_max_ch) OVER (PARTITION BY kv.master) AS tong --tong_cl_max_ch,
+   FROM sapph_thuathieu_kv kv 
+   WHERE kv.cl_max_ch > 0;
+   
+	FOR r IN select * from public.sapph_thuathieu_kv 
+	LOOP
+
+		select tong into v_tong_cl from sapph_thuathieu_kv_tong where dc = r.dc and master = r.master ;
+		update sapph_thuathieu_kv 
+			set tong_cl_max_ch = v_tong_cl  
+		where dc = r.dc and master = r.master ;
+
+	END LOOP ;
+	
+	update sapph_thuathieu_kv 
+		set tyle_cl_max_ch = (case when tong_cl_max_ch > 0 then 1.0*cl_max_ch/tong_cl_max_ch else 0 end );
+		
+	----------------------------
+
+	FOR r IN select master, slpb, slconlai from public.sapph_cungung_pb where slconlai > 0
+	LOOP 
+		FOR ri IN select * from public.sapph_thuathieu_kv where master = r.master and cl_max_ch > 0 --and (phan_phanhoi is null or phan_phanhoi > 0)
+		LOOP
+			v_phan = round(r.slconlai*ri.tyle_cl_max_ch, 0) ;
+			
+			-- kiem tra voi cl_max_ch 
+			if(v_phan > ri.cl_max_ch) then 
+				v_phan = ri.cl_max_ch; 
+			end if ;
+			
+			-- kiem tra sl con lai 
+			select slconlai into v_slconlai from public.sapph_cungung_pb where master = ri.master ; 
+			
+			if(v_phan > v_slconlai ) then 
+				v_phan = v_slconlai; 
+			end if ;
+			
+			-- cap nhat phan_cl_max_ch
+			if (v_phan > 0 ) then 
+				update sapph_cungung_pb 
+					set slconlai = slconlai - v_phan
+					where master = ri.master ;
+					
+				update sapph_thuathieu_kv
+					set  phan_cl_max_ch = COALESCE(phan_cl_max_ch,0) + v_phan, phanbo_all = COALESCE(phanbo_all,0) + v_phan
+					where dc = ri.dc and master = ri.master ;
+			end if ;
+			
+		END LOOP; -- sapph_thuathieu_kv inner 
+	END LOOP; -- sapph_cungung_pb outer
+	
+	
+	-- phan_cl_max_ch_bs -------------------------------------------------
+	FOR r IN select master, slpb, slconlai from public.sapph_cungung_pb where slconlai > 0
+	LOOP
+		--select sum(phan_cl_max_ch) into v_sum_phan from public.sapph_thuathieu_kv where master = r.master ;
+		--if (v_sum_phan = 0 ) then 
+			FOR ri IN select * from public.sapph_thuathieu_kv where master = r.master  and cl_max_ch > 0 and phan_cl_max_ch < cl_max_ch --and (phan_phanhoi is null or phan_phanhoi > 0)
+			order by tyle_cl_max_ch desc 
+				LOOP		
+					v_phan = 1 ;
+					
+					-- kiem tra voi cl_max_ch 
+					if(v_phan > ri.cl_max_ch) then 
+						v_phan = ri.cl_max_ch; 
+					end if ;
+					
+					-- kiem tra sl con lai 
+					select slconlai into v_slconlai from public.sapph_cungung_pb where master = ri.master ; 
+					
+					if(v_phan > v_slconlai ) then 
+						v_phan = v_slconlai; 
+					end if ;
+					
+					-- cap nhat phan_cl_max_ch_bs 
+					if (v_phan > 0 ) then 
+						update sapph_cungung_pb 
+							set slconlai = slconlai - v_phan
+							where master = ri.master ;
+							
+						update sapph_thuathieu_kv
+							set  phan_cl_max_ch_bs = COALESCE(phan_cl_max_ch_bs,0) + v_phan, phanbo_all = COALESCE(phanbo_all,0) + v_phan
+							where dc = ri.dc and master = ri.master ;
+					end if ;
+				END LOOP ;
+				
+		--end if ; -- end v_sum_phan = 0 
+	
+	END LOOP ; -- end phan_cl_max_ch_bs 
+	
+	---------------*****************  phan_sucban ********************************-------------------------------
+	
+	-- sức bán không trừ chênh lệch, chỉ tính tỷ lệ rồi phân 
+	
+	-- không phân sức bán cho khu vực không nhận hàng: thieu_min > 0 
+	
+	-- cap nhat gia tri tinh toan cua chenh lech 
+	-- tinh chenh lech 	
+	delete from public.sapph_thuathieu_kv_tong ;
+	
+	insert into public.sapph_thuathieu_kv_tong 
+	SELECT kv.dc,
+    kv.master,
+    sum(kv.sucban) OVER (PARTITION BY kv.master) AS tong --tong_sucban
+   FROM sapph_thuathieu_kv kv 
+   WHERE kv.sucban > 0;
+		
+	FOR r IN select * from public.sapph_thuathieu_kv where thieu_min > 0 
+	LOOP
+
+		select tong into v_tong_cl from sapph_thuathieu_kv_tong where dc = r.dc and master = r.master ;
+		update sapph_thuathieu_kv 
+			set tong_sucban = v_tong_cl  
+		where dc = r.dc and master = r.master ;
+
+	END LOOP ;
+	
+	update sapph_thuathieu_kv 
+		set tyle_sucban = (case when tong_sucban > 0 then 1.0*sucban/tong_sucban else 0 end );
+		
+	----------------------------
+
+	FOR r IN select master, slpb, slconlai from public.sapph_cungung_pb where slconlai > 0
+	LOOP 
+		FOR ri IN select * from public.sapph_thuathieu_kv where master = r.master and sucban > 0 and thieu_min > 0 --and (phan_phanhoi is null or phan_phanhoi > 0)
+		LOOP
+			v_phan = round(r.slconlai*ri.tyle_sucban, 0) ;
+			
+			-- kiem tra voi sucban 
+			if(v_phan > ri.sucban) then 
+				v_phan = ri.sucban; 
+			end if ;
+			
+			-- kiem tra sl con lai 
+			select slconlai into v_slconlai from public.sapph_cungung_pb where master = ri.master ; 
+			
+			if(v_phan > v_slconlai ) then 
+				v_phan = v_slconlai; 
+			end if ;
+			
+			-- cap nhat phan_sucban
+			if (v_phan > 0 ) then 
+				update sapph_cungung_pb 
+					set slconlai = slconlai - v_phan
+					where master = ri.master ;
+					
+				update sapph_thuathieu_kv
+					set  phan_sucban = COALESCE(phan_sucban,0) + v_phan, phanbo_all = COALESCE(phanbo_all,0) + v_phan
+					where dc = ri.dc and master = ri.master ;
+			end if ;
+			
+		END LOOP; -- sapph_thuathieu_kv inner 
+	END LOOP; -- sapph_cungung_pb outer
+	
+	-- phan_sucban_bs -------------------------------------------------
+	FOR r IN select master, slpb, slconlai from public.sapph_cungung_pb where slconlai > 0
+	LOOP
+		--select sum(phan_sucban) into v_sum_phan from public.sapph_thuathieu_kv where master = r.master ;
+		--if (v_sum_phan = 0 ) then 
+			FOR ri IN select * from public.sapph_thuathieu_kv where master = r.master  and sucban > 0 and thieu_min > 0 --(phan_phanhoi is null or phan_phanhoi > 0)
+			order by tyle_sucban desc 
+				LOOP		
+					v_phan = 1 ;
+					
+					-- kiem tra voi sucban 
+					if(v_phan > ri.sucban) then 
+						v_phan = ri.sucban; 
+					end if ;
+					
+					-- kiem tra sl con lai 
+					select slconlai into v_slconlai from public.sapph_cungung_pb where master = ri.master ; 
+					
+					if(v_phan > v_slconlai ) then 
+						v_phan = v_slconlai; 
+					end if ;
+					
+					-- cap nhat phan_sucban_bs 
+					if (v_phan > 0 ) then 
+						update sapph_cungung_pb 
+							set slconlai = slconlai - v_phan
+							where master = ri.master ;
+							
+						update sapph_thuathieu_kv
+							set  phan_sucban_bs = COALESCE(phan_sucban_bs,0) + v_phan, phanbo_all = COALESCE(phanbo_all,0) + v_phan
+							where dc = ri.dc and master = ri.master ;
+					end if ;
+				END LOOP ;
+				
+		--end if ; -- end v_sum_phan = 0 
+	
+	END LOOP ; -- end phan_sucban_bs 
+
+    END;
+    $BODY$
+  LANGUAGE plpgsql VOLATILE
+  COST 100;
+ALTER FUNCTION public.fn_sapph_phanbo_kv()
+  OWNER TO postgres;
