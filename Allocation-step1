@@ -1,0 +1,145 @@
+-- Function: public.fn_sapph_phanbo_kv_ktdl()
+
+-- DROP FUNCTION public.fn_sapph_phanbo_kv_ktdl();
+
+CREATE OR REPLACE FUNCTION public.fn_sapph_phanbo_kv_ktdl()
+  RETURNS void AS
+$BODY$ 
+	DECLARE
+	--v_thieu_min INTEGER := 0 ;
+	--v_thieu_max INTEGER := 0 ;
+	--v_count_cu_quay INTEGER := 0 ;
+    BEGIN
+	
+	/*
+	*	Author: vinh.nk
+	*	Company: PNJ
+	*   Date: 25/05/2021
+	*	Description: init data 
+	*   thuc hien truoc khi phan bo khu vuc  
+	*   Ex: select fn_sapph_phanbo_kv_ktdl() ;
+	*/
+		
+		insert into public.sapph_thuathieu_kv 
+			select 
+			a.dc  ,
+			  a.master , 
+			  a.nhomhang ,
+			  a.chungloai,
+			  
+			  null as phan_phanhoi,
+			  
+			  COALESCE(kv.thieu_min,0) as thieu_min, 
+			  0 as tong_min ,
+			  0 as tyle_min ,
+			  0 as phan_min ,
+			  0 as phan_min_bs ,
+			  
+			  COALESCE(kv.thieu_max,0) as thieu_max, 
+			  0 as cl_max, 
+			  0 as tong_cl_max,
+			  0 as tyle_cl_max,
+
+			  0 as phan_cl_max ,
+			  0 as phan_cl_max_bs ,
+			  
+			  COALESCE(t.thieu_min_ch,0) as thieu_min_ch, 
+			  0 as cl_min_ch, 
+			  0 as tong_cl_min_ch,
+			  0 as tyle_cl_min_ch,
+			  0 as phan_cl_min_ch, 
+			  0 as phan_cl_min_ch_bs,
+			  
+			  COALESCE(t.thieu_max_ch,0) as thieu_max_ch, 
+			  0 as cl_max_ch ,
+			  0 as tong_cl_max_ch,
+			  0 as tyle_cl_max_ch,
+			  0 as phan_cl_max_ch,
+			  0 as phan_cl_max_ch_bs,
+			  
+			  COALESCE(sb.sucban,0) as sucban,  
+			  0 as tong_sucban,
+			  0 as tyle_sucban,
+			  0 as phan_sucban ,
+			  0 as phan_sucban_bs ,
+ 
+			  0 as phanbo 
+			from (
+					select dc, master, nhomhang, chungloai
+					from public.sapph_thuathieu_kv_upload  
+					union 
+					select dc, master, nhomhang, chungloai
+					from public.sapph_thuathieu_ch_upload
+				) a 
+			left join public.sapph_thuathieu_kv_upload kv on a.dc = kv.dc and a.master = kv.master
+			left join (	select 
+			  dc , 
+			  master , 
+			  sum(thieu_min) as thieu_min_ch , 
+			  sum(thieu_max) as thieu_max_ch 
+			from public.sapph_thuathieu_ch_upload 
+			group by dc, master
+			) t on a.dc = t.dc and a.master = t.master 
+			left join (select 
+			  dc , 
+			  master , 
+			  sum(sucban) as sucban
+			from public.sapph_cuahang_sucban_upload 
+			group by dc, master ) sb on sb.dc = a.dc and sb.master = a.master 
+			;
+			-- cac gia tri phai tinh tiep : phan_min , phan_cl_max, cl_min_ch, phan_cl_min_ch, cl_max_ch, phan_cl_max_ch, cl_sucban, phan_cl_sucban, phanbo
+
+
+		insert into sapph_cungung_pb 
+		select 
+		  master , 
+		  sum(slkhadung) as slpb , 
+		  sum(slkhadung) as slconlai
+		from  public.sapph_cungung_upload 
+		group by master
+		;
+		
+		insert into public.sapph_cuahang_phanhoi 
+		select ph.madonvi , 
+		  ph.dc , 
+		  ph.material , 
+		  ph.master ,
+		  ph.nhomhang,
+		  ph.chungloai,
+		  ph.soluong, 
+		  ph.khaitruong,
+		  ph.cangap ,
+		  ph.chuongtrinh ,
+		  --ph.khongnhan ,
+		  (case when khaitruong = 'X' then 1 when cangap = 'X' then 2 when chuongtrinh  = 'X' then 3 end ) as uutien, -- Mức ưu tiên : 0 - không nhận hàng; 1,2, 3 , ưu tiên theo thứ tự tăng dần priority
+		  t.thieu_max_ch ,
+		  (case when ph.soluong > t.thieu_max_ch then t.thieu_max_ch when  ph.soluong <= t.thieu_max_ch then ph.soluong end) as dapung_ch 
+		from public.sapph_cuahang_phanhoi_upload ph
+		left join (	select 
+		  madonvi , 
+		  master , 
+		  sum(thieu_min) as thieu_min_ch , 
+		  sum(thieu_max) as thieu_max_ch 
+		from public.sapph_thuathieu_ch_upload 
+		group by madonvi, master
+		) t on t.madonvi = ph.madonvi and t.master = ph.master;
+		
+		insert into public.sapph_cuahang_phanhoi_khongnhan 
+		select ph.madonvi , 
+		  ph.dc ,  
+		  ph.master ,
+		  ph.nhomhang,
+		  ph.chungloai,
+		  ph.tonht, 
+		  ph.thieu_min,
+		  ph.thieu_max,
+		  1 as status
+		from public.sapph_thuathieu_ch_upload ph ;
+		
+
+    END;
+    $BODY$
+  LANGUAGE plpgsql VOLATILE
+  COST 100;
+ALTER FUNCTION public.fn_sapph_phanbo_kv_ktdl()
+  OWNER TO postgres;
